@@ -1,50 +1,72 @@
-// file-cryptor.exe -f -e -key <key>
-// file-cryptor.exe -f -d -key <key>
-
-use std::path::Path;
+use clap::{command, Arg};
 use std::process;
+use std::str::FromStr;
 use std::{env, fs};
+use std::path::Path;
+
+enum Mode {
+    Encrypt, // Encryption mode
+    Decrypt, // Decryption mode
+}
+
+impl FromStr for Mode {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Mode, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "encryption" => Ok(Mode::Encrypt),
+            "decryption" => Ok(Mode::Decrypt),
+            _ => Err("invalid mode, must be 'encrypt' or 'decrypt'"),
+        }
+    }
+}
 
 struct Arguments {
     file_name: String,
-
-    // true for encryption,
-    // false for decryption
-    mode: bool,
+    mode: Mode,
     key: u8,
 }
 
 impl Arguments {
-    fn new(args: &[String]) -> Result<Arguments, &'static str> {
-        if args.len() != 6 {
-            return Err("invalid number of arguments.");
-        }
+    fn new() -> Result<Arguments, &'static str> {
+        let args = command!()
+            .arg(
+                Arg::new("filename")
+                    .short('f')
+                    .long("file")
+                    .required(true)
+            )
+            .arg(
+                Arg::new("mode")
+                    .short('m')
+                    .long("mode")
+                    .required(true)
+            )
+            .arg(
+                Arg::new("key")
+                    .short('k')
+                    .long("key")
+                    .required(true)
+            )
+            .get_matches();
 
-        let file_name = Self::get_arg_value(args, "-f")
-            .ok_or("Invalid syntax. Expected -f in command arguments.")?;
+        let file_name: String = args
+            .get_one::<String>("filename")
+            .ok_or("error while getting filename argument")?
+            .clone();
 
-        if !file_name.ends_with(".txt") {
-            return Err("Invalid file name. Expected a .txt file.");
-        }
+        let mode: Mode = args
+            .get_one::<String>("mode")
+            .ok_or("error while getting mode argument")?
+            .parse()
+            .map_err(|_| "Invalid mode argument")?;
 
-        if !Path::new(&file_name).exists() {
-            return Err("File not found.");
-        }
-
-        let key_str = Self::get_arg_value(args, "-key")
-            .ok_or("Invalid syntax. Expected -key in command arguments.")?;
-
-        let key: u8 = match key_str.parse() {
-            Ok(k) => k,
-            Err(_) => return Err("invalid key format. Expected i32."),
-        };
-
-        let mode = if args.contains(&"-e".to_string()) {
-            true
-        } else if args.contains(&"-d".to_string()) {
-            false
-        } else {
-            return Err("invalid mode argument. Expected -e or -d.");
+        let key: u8 = match args.get_one::<String>("key") {
+            Some(k) => k
+                .to_string()
+                .parse()
+                .map_err(|_| "error while parsing key, expected u8 number")?,
+            None => return Err("error while get key argument")
         };
 
         Ok(Arguments {
@@ -53,64 +75,67 @@ impl Arguments {
             key,
         })
     }
-
-    fn get_arg_value(args: &[String], flag: &str) -> Option<String> {
-        args.iter()
-            .position(|x| x == flag)
-            .and_then(|index| args.get(index + 1).cloned())
-    }
 }
 
-fn encryption(data: &mut Vec<u8>, key: u8) {
-    for d in data.iter_mut() {
+fn encryption<'a, I>(data: I, key: u8)
+where
+    I: Iterator<Item = &'a mut u8> {
+    for d in data {
         *d ^= key;
     }
 }
 
-fn decryption(data: &mut Vec<u8>, key: u8) {
-    for d in data.iter_mut() {
+fn decryption<'a, I>(data: I, key: u8)
+where
+    I: Iterator<Item = &'a mut u8> {
+    for d in data {
         *d ^= key;
     }
-}
-
-fn read_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
-    let data: Vec<u8> = fs::read(path)?;
-    Ok(data)
-}
-
-fn write_to_file(path: &str, data: Vec<u8>) -> Result<(), std::io::Error> {
-    fs::write(path, data)?;
-    Ok(())
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let arguments = Arguments::new(&args).unwrap_or_else(|err| {
-        eprintln!("problem parsing arguments: {}", err);
+    let args: Arguments = match Arguments::new() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("problem parsing arguments: {}", e);
+            process::exit(0);
+        }
+    };
+
+    if !args.file_name.ends_with(".txt") {
+        eprintln!("invalid file name. Expect *.txt");
         process::exit(1);
-    });
+    }
 
-    let mut data = read_file(arguments.file_name.as_str()).unwrap_or_else(|err| {
-        eprintln!("problem reading data from file: {}", err);
-        process::exit(2);
-    });
+    if !Path::new(&args.file_name).exists() {
+        eprintln!("file not found.");
+        process::exit(1);
+    }
 
-    if data.len() == 0 {
+    let mut data = match fs::read(&args.file_name) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error while read from file: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if data.is_empty() {
         eprintln!("input file is empty.");
         process::exit(1);
     }
 
-    if arguments.mode {
-        encryption(&mut data, arguments.key);
-        write_to_file(arguments.file_name.as_str(), data).unwrap_or_else(|err| {
-            eprintln!("failed to write in file: {}", err);
-            process::exit(3);
-        })
-    } else {
-        decryption(&mut data, arguments.key);
-        write_to_file(arguments.file_name.as_str(), data).unwrap_or_else(|err| {
-            eprintln!("failed to write in file: {}", err);
-            process::exit(3);
-        })
+    match args.mode {
+        Mode::Encrypt => {
+            encryption(data.iter_mut(), args.key);
+        }
+        Mode::Decrypt => {
+            decryption(data.iter_mut(), args.key);
+        }
+    }
+
+    if let Err(err) = fs::write(&args.file_name, &data) {
+        eprintln!("failed to write to file: {}", err);
+        process::exit(3);
     }
 }
